@@ -9,6 +9,7 @@ DATA_URL = (
 )
 LAST_YEAR = 2025   # 수업의 기준 기간: 이 해까지만 사용
 MIN_DAYS = 300     # 관측일이 이보다 적은 해는 제외
+RECENT_YEARS = 20  # 최근 몇 년으로 비교 직선을 만들지
 
 st.set_page_config(page_title="기온 예측기", layout="wide")
 
@@ -58,6 +59,18 @@ n_years = len(annual)
 start_year = int(annual["연도"].min())
 end_year = int(annual["연도"].max())
 
+# 최근 20년만으로 구한 직선
+recent = annual[annual["연도"] > end_year - RECENT_YEARS].reset_index(drop=True)
+if len(recent) >= 3:
+    r_slope, r_intercept = np.polyfit(
+        recent["연도"].to_numpy(dtype=float),
+        recent["연평균기온"].to_numpy(dtype=float),
+        1,
+    )
+    r_corr = float(np.corrcoef(recent["연도"], recent["연평균기온"])[0, 1])
+else:
+    r_slope = r_intercept = r_corr = None
+
 # 직선 정보
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("직선을 만든 해의 개수", f"{n_years}개")
@@ -68,8 +81,68 @@ c4.metric("상관계수 (r)", f"{corr:.3f}")
 sign = "+" if intercept >= 0 else "-"
 st.markdown(
     f"회귀 직선: **연평균기온 = {slope:.4f} × 연도 {sign} {abs(intercept):.2f}**"
-    f" (10년당 약 {slope * 10:+.2f}℃)"
 )
+
+# 기울기: 100년에 몇 도 오르는가
+st.subheader("기온 상승 속도 (100년 환산)")
+per100 = slope * 100
+
+
+def big_number(label, value, note):
+    text = "계산 불가" if value is None else f"{value:+.2f}℃"
+    return f"""
+    <div style="text-align:center; padding:0.8rem 0;">
+      <div style="font-size:1.05rem; opacity:0.7;">{label}</div>
+      <div style="font-size:3.6rem; font-weight:700; line-height:1.2;">{text}</div>
+      <div style="font-size:0.95rem; opacity:0.7;">{note}</div>
+    </div>
+    """
+
+
+st.markdown(
+    f"""
+    <div style="text-align:center; padding:0.6rem 0 1rem 0;">
+      <div style="font-size:1.1rem; opacity:0.7;">직선의 기울기를 100년 기준으로 환산하면</div>
+      <div style="font-size:4.5rem; font-weight:700; line-height:1.2;">100년에 {per100:+.2f}℃</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown("**전체 기간과 최근 20년의 기울기 비교** (모두 100년 환산)")
+left, right = st.columns(2)
+with left:
+    st.markdown(
+        big_number(
+            "전체 기간",
+            per100,
+            f"{start_year}~{end_year}년, {n_years}개 해, r = {corr:.3f}",
+        ),
+        unsafe_allow_html=True,
+    )
+with right:
+    if r_slope is None:
+        st.markdown(big_number("최근 20년", None, "해당 기간의 자료가 부족합니다."),
+                    unsafe_allow_html=True)
+    else:
+        r_start = int(recent["연도"].min())
+        r_end = int(recent["연도"].max())
+        st.markdown(
+            big_number(
+                "최근 20년",
+                r_slope * 100,
+                f"{r_start}~{r_end}년, {len(recent)}개 해, r = {r_corr:.3f}",
+            ),
+            unsafe_allow_html=True,
+        )
+
+if r_slope is not None:
+    diff = (r_slope - slope) * 100
+    st.caption(
+        f"최근 20년의 기울기는 전체 기간보다 100년당 {abs(diff):.2f}℃ "
+        f"{'더 큽니다' if diff > 0 else '더 작습니다'}. "
+        "표본이 20개 안팎으로 적어 기울기의 불확실성이 크므로, 단기 추세는 신중하게 해석해야 합니다."
+    )
 
 # 연도 선택과 예상 기온
 st.subheader("예상 기온")
@@ -119,6 +192,18 @@ fig.add_trace(
         hoverinfo="skip",
     )
 )
+if r_slope is not None:
+    rx = np.array([int(recent["연도"].min()), int(recent["연도"].max())], dtype=float)
+    fig.add_trace(
+        go.Scatter(
+            x=rx,
+            y=r_slope * rx + r_intercept,
+            mode="lines",
+            name="최근 20년 직선",
+            line=dict(width=3, dash="dash"),
+            hoverinfo="skip",
+        )
+    )
 fig.add_trace(
     go.Scatter(
         x=[year],
