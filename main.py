@@ -7,23 +7,20 @@ DATA_URL = (
     "https://raw.githubusercontent.com/greatsong/modudata/"
     "bb860932644270ad1199f10d3e7670e30231bce4/data/seoul.csv"
 )
-LAST_YEAR = 2025      # 수업의 기준 기간 마지막 연도
-MIN_DAYS = 300        # 한 해에 필요한 최소 관측일수
+LAST_YEAR = 2025   # 수업의 기준 기간: 이 해까지만 사용
+MIN_DAYS = 300     # 관측일이 이보다 적은 해는 제외
 
 st.set_page_config(page_title="기온 예측기", layout="wide")
 
 
 @st.cache_data(show_spinner="데이터를 불러오는 중입니다.")
 def load_annual() -> pd.DataFrame:
-    """일별 자료에서 연도별 평균기온을 구한다.
-
-    - 2025년 이후 자료는 제외한다.
-    - 평균기온 관측일수가 300일 미만인 해는 제외한다.
-    """
-    df = pd.read_csv(DATA_URL, encoding="utf-8-sig")
-    df.columns = df.columns.str.strip()
-    df["날짜"] = pd.to_datetime(df["날짜"])
-    df = df.dropna(subset=["평균기온"])
+    """일별 자료 -> 연도별 평균기온(관측일수 포함)."""
+    df = pd.read_csv(DATA_URL, encoding="utf-8")
+    df.columns = df.columns.str.replace("﻿", "", regex=False).str.strip()
+    df["날짜"] = pd.to_datetime(df["날짜"], errors="coerce")
+    df["평균기온"] = pd.to_numeric(df["평균기온"], errors="coerce")
+    df = df.dropna(subset=["날짜", "평균기온"])
     df["연도"] = df["날짜"].dt.year
     df = df[df["연도"] <= LAST_YEAR]
 
@@ -37,48 +34,53 @@ def load_annual() -> pd.DataFrame:
 
 st.title("기온 예측기")
 st.caption(
-    f"서울 일별 기온 자료로 연평균기온을 구하고, 연도에 따른 변화를 "
-    f"직선으로 근사하여 임의의 해의 기온을 예측합니다. "
-    f"(기준 기간: {LAST_YEAR}년까지, 관측일수 {MIN_DAYS}일 미만인 해 제외)"
+    f"서울 일별 기온 자료에서 연평균기온을 구하고, 연도에 따른 변화를 직선으로 "
+    f"근사하여 선택한 해의 기온을 예측합니다. "
+    f"({LAST_YEAR}년까지의 자료만 사용, 관측일 {MIN_DAYS}일 미만인 해 제외)"
 )
 
 try:
     annual = load_annual()
-except Exception as exc:  # 네트워크 오류 등
+except Exception as exc:
     st.error(f"데이터를 불러오지 못했습니다: {exc}")
     st.stop()
 
-x = annual["연도"].to_numpy(dtype=float)
-y = annual["연평균기온"].to_numpy(dtype=float)
-slope, intercept = np.polyfit(x, y, 1)
-corr = float(np.corrcoef(x, y)[0, 1])
+if len(annual) < 3:
+    st.error("조건을 만족하는 연도가 너무 적어 회귀 직선을 만들 수 없습니다.")
+    st.stop()
+
+years = annual["연도"].to_numpy(dtype=float)
+temps = annual["연평균기온"].to_numpy(dtype=float)
+slope, intercept = np.polyfit(years, temps, 1)
+corr = float(np.corrcoef(years, temps)[0, 1])
 
 n_years = len(annual)
 start_year = int(annual["연도"].min())
 end_year = int(annual["연도"].max())
 
-# ── 회귀 직선 정보 ─────────────────────────────────────────────
+# 직선 정보
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("직선을 만든 해의 개수", f"{n_years}개")
 c2.metric("시작 연도", f"{start_year}년")
 c3.metric("끝 연도", f"{end_year}년")
 c4.metric("상관계수 (r)", f"{corr:.3f}")
 
+sign = "+" if intercept >= 0 else "-"
 st.markdown(
-    f"회귀 직선: **연평균기온 = {slope:.4f} × 연도 + ({intercept:.2f})**  "
-    f"(10년당 약 {slope * 10:+.2f}℃)"
+    f"회귀 직선: **연평균기온 = {slope:.4f} × 연도 {sign} {abs(intercept):.2f}**"
+    f" (10년당 약 {slope * 10:+.2f}℃)"
 )
 
-# ── 연도 선택과 예측 ───────────────────────────────────────────
+# 연도 선택과 예상 기온
 st.subheader("예상 기온")
-year = st.slider("연도를 선택하십시오.", min_value=1900, max_value=2100, value=2026, step=1)
+year = st.slider("연도를 선택하십시오.", 1900, 2100, 2026, 1)
 pred = slope * year + intercept
 
 st.markdown(
     f"""
     <div style="text-align:center; padding:1.2rem 0 1.6rem 0;">
-        <div style="font-size:1.1rem; opacity:0.7;">{year}년 서울의 예상 연평균기온</div>
-        <div style="font-size:4.5rem; font-weight:700; line-height:1.2;">{pred:.2f}℃</div>
+      <div style="font-size:1.1rem; opacity:0.7;">{year}년 서울의 예상 연평균기온</div>
+      <div style="font-size:4.5rem; font-weight:700; line-height:1.2;">{pred:.2f}℃</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -87,13 +89,13 @@ st.markdown(
 if year < start_year or year > end_year:
     st.caption(
         f"선택한 연도는 직선을 만든 기간({start_year}~{end_year}년) 밖에 있으므로, "
-        "이 값은 직선을 연장하여 얻은 외삽 결과입니다."
+        "이 값은 직선을 연장한 외삽 결과입니다."
     )
 
-# ── 산점도와 회귀 직선 ─────────────────────────────────────────
-line_x0 = min(start_year, year)
-line_x1 = max(end_year, year)
-line_x = np.array([line_x0, line_x1], dtype=float)
+# 산점도 + 회귀 직선
+x_lo = min(start_year, year)
+x_hi = max(end_year, year)
+line_x = np.array([x_lo, x_hi], dtype=float)
 line_y = slope * line_x + intercept
 
 fig = go.Figure()
@@ -135,7 +137,7 @@ fig.update_layout(
     margin=dict(l=40, r=20, t=80, b=40),
     height=520,
 )
-st.plotly_chart(fig)
+st.plotly_chart(fig, use_container_width=True)
 
 with st.expander("연도별 평균기온 표 보기"):
     st.dataframe(
